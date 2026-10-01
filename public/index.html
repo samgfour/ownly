@@ -24,10 +24,9 @@ button.p{background:#2563eb;color:#fff;border-color:#2563eb}
 .ok{color:#059669}.no{color:#dc2626}
 </style>
 <script>document.documentElement.dataset.theme=localStorage.getItem("ownly-theme")||(matchMedia("(prefers-color-scheme: dark)").matches?"dark":"light")</script></head><body><div id="root"></div>
+<script src="/config.js"></script>
 <script>
-// ====== FILL THESE IN (Supabase > Project Settings > API) ======
-const SB="https://YOUR-PROJECT.supabase.co", KEY="YOUR-ANON-PUBLIC-KEY";
-// ===============================================================
+const {SB,KEY}=window.OWNLY||{SB:"",KEY:""};
 const $=s=>document.querySelector(s), root=$("#root");
 const esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const safe=u=>/^(https?:|mailto:|tel:)/i.test(u)?u:"https://"+u;
@@ -201,6 +200,7 @@ async function app(){
 
 const path=location.pathname.replace(/\/+$/,"")||"/";
 fromHash().then(em=>{
+  if(!SB||/YOUR-/.test(SB+KEY))return root.innerHTML=`<div class="w"><b>Setup needed</b><p class="m">Fill in your Supabase URL and anon key in public/config.js, then redeploy.</p></div>`;
   if(em)return home("login",em+" Log in, or sign up again for a new link.");
   if(path==="/")home();
   else if(path==="/app")app();
