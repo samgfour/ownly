@@ -1,0 +1,96 @@
+#!/usr/bin/env bash
+# ownly: manage your Ownly link page from the terminal. Needs curl + jq.
+set -euo pipefail
+CFG="${OWNLY_CONFIG:-$HOME/.config/ownly/config}"
+
+usage(){ cat <<U
+Usage: ownly <command>
+  init                         save URL, anon key and login to $CFG
+  ls                           list links
+  add "Title" URL [emoji]      add a link (goes to the end)
+  edit ID title|url|emoji|position VALUE
+  rm ID                        delete a link and its click history
+  mv ID POSITION               set a link's position (0 = top)
+  profile username|name|bio|avatar|color|bg|style VALUE
+  status                       subscription expiry
+  claims                       (admin) payments waiting for approval
+  approve ID | reject ID       (admin) approve or reject a waiting payment
+  received CODE AMOUNT         (admin) record a code from your M-Pesa SMS
+  stats                        total, last 7 days, clicks per link
+U
+}
+
+init(){
+  mkdir -p "$(dirname "$CFG")"
+  read -rp "Supabase URL (https://xxxx.supabase.co): " u
+  read -rp "Anon public key: " k
+  read -rp "Your admin email: " e
+  read -rsp "Your admin password: " p; echo
+  umask 077
+  printf 'OWNLY_URL=%q\nOWNLY_KEY=%q\nOWNLY_EMAIL=%q\nOWNLY_PASSWORD=%q\n' "$u" "$k" "$e" "$p" > "$CFG"
+  echo "Saved to $CFG (chmod 600)"
+}
+
+[ "${1:-}" = init ] && { init; exit; }
+[ $# -eq 0 ] || [ "$1" = -h ] || [ "$1" = --help ] && { usage; exit; }
+[ -f "$CFG" ] || { echo "No config. Run: ownly init" >&2; exit 1; }
+# shellcheck disable=SC1090
+. "$CFG"
+command -v jq >/dev/null || { echo "jq is required" >&2; exit 1; }
+
+LOGIN=$(curl -fsS "$OWNLY_URL/auth/v1/token?grant_type=password" \
+  -H "apikey: $OWNLY_KEY" -H "Content-Type: application/json" \
+  -d "$(jq -n --arg e "$OWNLY_EMAIL" --arg p "$OWNLY_PASSWORD" '{email:$e,password:$p}')") \
+  || { echo "Login failed" >&2; exit 1; }
+TOKEN=$(jq -r '.access_token // empty' <<<"$LOGIN"); UID_=$(jq -r '.user.id // empty' <<<"$LOGIN")
+[ -n "$TOKEN" ] || { echo "Login failed (check email/password)" >&2; exit 1; }
+
+api(){ # METHOD PATH [JSON body]
+  curl -fsS -X "$1" "$OWNLY_URL/rest/v1/$2" -H "apikey: $OWNLY_KEY" \
+    -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+    -H "Prefer: return=representation" ${3:+-d "$3"}
+}
+need_id(){ [[ "${1:-}" =~ ^[0-9]+$ ]] || { echo "ID must be a number (see: ownly ls)" >&2; exit 1; }; }
+
+cmd=$1; shift
+case "$cmd" in
+  ls)
+    api GET "links?user_id=eq.$UID_&order=position.asc,id.asc" | jq -r '.[] | "\(.id)\t\(.position)\t\(.emoji) \(.title)\t\(.url)"' | column -t -s $'\t' ;;
+  add)
+    [ $# -ge 2 ] || { usage; exit 1; }
+    n=$(api GET "links?select=id&user_id=eq.$UID_" | jq length)
+    api POST links "$(jq -n --arg t "$1" --arg u "$2" --arg e "${3:-🔗}" --argjson p "$n" '{title:$t,url:$u,emoji:$e,position:$p}')" \
+      | jq -r '.[0] | "Added #\(.id): \(.title)"' ;;
+  edit)
+    need_id "${1:-}"; [ $# -eq 3 ] || { usage; exit 1; }
+    case "$2" in title|url|emoji|position) ;; *) echo "Field must be title, url, emoji or position" >&2; exit 1;; esac
+    if [ "$2" = position ]; then body=$(jq -n --argjson v "$3" '{position:$v}'); else body=$(jq -n --arg f "$2" --arg v "$3" '{($f):$v}'); fi
+    api PATCH "links?id=eq.$1" "$body" | jq -r 'if length==0 then "No link with that ID" else "Updated #\(.[0].id)" end' ;;
+  rm)
+    need_id "${1:-}"
+    api DELETE "links?id=eq.$1" | jq -r 'if length==0 then "No link with that ID" else "Deleted #\(.[0].id): \(.[0].title)" end' ;;
+  mv)
+    need_id "${1:-}"; [[ "${2:-}" =~ ^[0-9]+$ ]] || { usage; exit 1; }
+    api PATCH "links?id=eq.$1" "{\"position\":$2}" | jq -r 'if length==0 then "No link with that ID" else "Moved #\(.[0].id) to \(.[0].position)" end' ;;
+  profile)
+    [ $# -eq 2 ] || { usage; exit 1; }
+    case "$1" in username|name|bio|avatar|color|bg|style) ;; *) echo "Field must be username, name, bio, avatar, color, bg or style" >&2; exit 1;; esac
+    api PATCH "profiles?user_id=eq.$UID_" "$(jq -n --arg f "$1" --arg v "$2" '{($f):$v}')" >/dev/null && echo "Profile $1 updated" ;;
+  status)
+    api GET "subscriptions?user_id=eq.$UID_" | jq -r 'if length==0 then "No subscription" else "Active until \(.[0].expires_at)" end' ;;
+  claims)
+    api GET "claims?status=eq.pending&order=created_at.asc" | jq -r '.[] | "\(.id)\t\(.code)\t\(.phone)\t\(.created_at)"' | column -t -s $'\t' ;;
+  approve) need_id "${1:-}"; api POST rpc/approve_claim "{\"p_id\":$1}" >/dev/null && echo "Approved #$1" ;;
+  reject)  need_id "${1:-}"; api POST rpc/reject_claim  "{\"p_id\":$1}" >/dev/null && echo "Rejected #$1" ;;
+  received)
+    [ $# -eq 2 ] || { usage; exit 1; }
+    api POST rpc/add_received "$(jq -n --arg c "$1" --argjson a "$2" '{p_code:$c,p_amount:$a}')" | jq -r . ;;
+  stats)
+    l=$(api GET "links?select=id,title&user_id=eq.$UID_&order=position.asc,id.asc")
+    c=$(api GET "clicks?select=link_id,created_at&limit=10000")
+    jq -rn --argjson l "$l" --argjson c "$c" '
+      ($c | map(select((.created_at | sub("\\.[0-9]+";"") | sub("\\+00:00$";"Z") | fromdateiso8601) > (now - 604800))) | length) as $wk
+      | "Total clicks: \($c|length)    Last 7 days: \($wk)\n",
+        ($l[] | . as $x | "\([$c[] | select(.link_id == $x.id)] | length)\t\($x.title)")' | column -t -s $'\t' ;;
+  *) usage; exit 1 ;;
+esac
