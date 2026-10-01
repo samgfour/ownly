@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ownly</title>
+<style>
+*{box-sizing:border-box}body{margin:0;font:15px/1.4 system-ui,sans-serif;background:#f4f4f1;color:#1c1c1a}
+.w{max-width:440px;margin:0 auto;padding:40px 18px;text-align:center}
+.av{width:84px;height:84px;border-radius:50%;margin:0 auto 10px;display:grid;place-items:center;font-size:32px;font-weight:700;color:#fff;overflow:hidden}
+.av img{width:100%;height:100%;object-fit:cover}
+.pl{display:block;margin:10px 0;padding:14px;text-decoration:none;font-weight:600;border:2px solid}
+.a{max-width:560px;margin:0 auto;padding:16px;text-align:left}
+.a h2{margin:18px 0 6px;font-size:16px}
+.c{background:#fff;border:1px solid #ddd;border-radius:12px;padding:10px;margin-bottom:8px}
+input,textarea,select{width:100%;padding:8px;margin:3px 0;border:1px solid #ccc;border-radius:8px;font:inherit}
+button{padding:8px 12px;border:1px solid #ccc;background:#fff;border-radius:8px;font:inherit;cursor:pointer}
+button.p{background:#2563eb;color:#fff;border-color:#2563eb}
+.r{display:flex;gap:6px;align-items:center}.m{color:#777;font-size:12px}
+.bar{height:8px;background:#2563eb;border-radius:4px;margin:3px 0 8px}
+.ok{color:#059669}.no{color:#dc2626}
+</style></head><body><div id="root"></div>
+<script>
+// ====== FILL THESE IN (Supabase > Project Settings > API) ======
+const SB="https://YOUR-PROJECT.supabase.co", KEY="YOUR-ANON-PUBLIC-KEY";
+// ===============================================================
+const $=s=>document.querySelector(s), root=$("#root");
+const esc=s=>String(s??"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const safe=u=>/^(https?:|mailto:|tel:)/i.test(u)?u:"https://"+u;
+const dark=h=>{const n=parseInt(h.slice(1),16);return((n>>16)*.3+((n>>8)&255)*.59+(n&255)*.11)<110};
+let S=null;try{S=JSON.parse(localStorage.getItem("ownly"))}catch(e){}
+const setS=s=>{S=s;s?localStorage.setItem("ownly",JSON.stringify(s)):localStorage.removeItem("ownly")};
+
+async function refresh(){
+  if(!S?.ref)return false;
+  const r=await fetch(SB+"/auth/v1/token?grant_type=refresh_token",{method:"POST",headers:{apikey:KEY,"Content-Type":"application/json"},body:JSON.stringify({refresh_token:S.ref})});
+  const j=await r.json();if(!j.access_token){setS(null);return false}
+  setS({tok:j.access_token,ref:j.refresh_token,uid:j.user.id});return true;
+}
+async function api(path,{method="GET",body,auth,headers={}}={},retry=1){
+  const r=await fetch(SB+path,{method,body:body&&JSON.stringify(body),keepalive:method==="POST"&&path.includes("clicks"),
+    headers:{apikey:KEY,Authorization:"Bearer "+((auth&&S?.tok)||KEY),"Content-Type":"application/json",Prefer:"return=representation",...headers}});
+  if(r.status===401&&auth){if(retry&&await refresh())return api(path,{method,body,auth,headers},0);setS(null);throw new Error("auth")}
+  if(!r.ok)throw new Error(await r.text());
+  return r.status===204?null:r.json();
+}
+
+/* ---------- public page: /username ---------- */
+async function pub(name){
+  const [p]=await api(`/rest/v1/profiles?username=eq.${encodeURIComponent(name)}`);
+  if(!p)return root.innerHTML=`<div class="w"><h1>Page not found</h1><p class="m">It may not exist, or its owner's subscription has lapsed.</p><a href="/">Make your own with Ownly</a></div>`;
+  const links=await api(`/rest/v1/links?user_id=eq.${p.user_id}&order=position.asc,id.asc`);
+  document.title=p.name||p.username;document.body.style.background=p.bg;
+  const fill=p.style!=="outline",rad=p.style==="pill"?"30px":"12px",nm=p.name||p.username;
+  root.innerHTML=`<div class="w" style="color:${dark(p.bg)?"#fff":"#1c1c1a"}"><div class="av" style="background:${esc(p.color)}">${p.avatar?`<img src="${esc(p.avatar)}" alt="">`:esc(nm[0].toUpperCase())}</div>
+  <b>${esc(nm)}</b><div style="opacity:.7;margin-bottom:14px">${esc(p.bio)}</div>`+
+  links.map(l=>`<a class="pl" data-id="${l.id}" href="${esc(safe(l.url))}" rel="noopener" style="border-radius:${rad};border-color:${esc(p.color)};background:${fill?esc(p.color):"transparent"};color:${fill?"#fff":esc(p.color)}">${esc(l.emoji)} ${esc(l.title)}</a>`).join("")+`</div>`;
+  root.querySelectorAll(".pl").forEach(a=>a.addEventListener("click",()=>{api("/rest/v1/clicks",{method:"POST",body:{link_id:+a.dataset.id},headers:{Prefer:"return=minimal"}}).catch(()=>{})}));
+}
+
+/* ---------- home / login / signup ---------- */
+function home(mode="signup",msg=""){
+  if(S?.tok)return location.replace("/app");
+  const li=mode==="login";
+  root.innerHTML=`<div class="w"><h1 style="font-size:32px;margin:30px 0 6px">Ownly</h1><p class="m" style="font-size:15px">A link-in-bio page you actually own.<br>Custom buttons and click analytics.</p>
+  <div class="c" style="text-align:left"><b>${li?"Log in":"Create your account"}</b><div class="m">${esc(msg)}</div>
+  <input id="e" type="email" placeholder="Email" autocomplete="username"><input id="pw" type="password" placeholder="Password (6+ characters)" autocomplete="${li?"current-password":"new-password"}">
+  <button class="p" id="go" style="width:100%;margin-top:6px">${li?"Log in":"Sign up"}</button>
+  <div style="margin-top:10px"><a href="#" id="sw">${li?"New here? Sign up":"Have an account? Log in"}</a></div></div></div>`;
+  $("#sw").onclick=e=>{e.preventDefault();home(li?"signup":"login")};
+  $("#go").onclick=async()=>{
+    const r=await fetch(SB+(li?"/auth/v1/token?grant_type=password":"/auth/v1/signup"),{method:"POST",headers:{apikey:KEY,"Content-Type":"application/json"},body:JSON.stringify({email:$("#e").value.trim(),password:$("#pw").value})});
+    const j=await r.json();
+    if(j.access_token){setS({tok:j.access_token,ref:j.refresh_token,uid:j.user.id});return location.replace("/app")}
+    home(mode,j.error_description||j.msg||(li?"Login failed":"Check your email to confirm your account, then log in."));
+  };
+}
+
+/* ---------- dashboard: /app ---------- */
+function onboard(msg=""){
+  root.innerHTML=`<div class="a"><h2>Pick your username</h2><div class="m">Your page will live at ${esc(location.host)}/<b>username</b>. ${esc(msg)}</div>
+  <input id="un" placeholder="e.g. sam" maxlength="20" autocapitalize="none"><button class="p" id="go">Create my page</button></div>`;
+  $("#go").onclick=async()=>{const u=$("#un").value.trim().toLowerCase();
+    if(!/^[a-z0-9_]{3,20}$/.test(u))return onboard("Use 3-20 letters, numbers or underscores.");
+    try{await api("/rest/v1/profiles",{method:"POST",auth:1,body:{username:u,name:u}});app()}catch(e){onboard(/duplicate|23505|check/i.test(e.message)?"That username is taken or not allowed.":e.message)}};
+}
+async function app(){
+  if(!S?.tok)return location.replace("/");
+  let pr,links,clicks,sub,cfg,adm,claims;
+  try{
+    [[pr],links,clicks,[sub],[cfg],[adm],claims]=await Promise.all([
+      api(`/rest/v1/profiles?user_id=eq.${S.uid}`,{auth:1}),
+      api(`/rest/v1/links?user_id=eq.${S.uid}&order=position.asc,id.asc`,{auth:1}),
+      api("/rest/v1/clicks?select=link_id,created_at&order=created_at.desc&limit=10000",{auth:1}),
+      api(`/rest/v1/subscriptions?user_id=eq.${S.uid}`,{auth:1}),
+      api("/rest/v1/settings?id=eq.1",{auth:1}),
+      api(`/rest/v1/admins?user_id=eq.${S.uid}`,{auth:1}),
+      api("/rest/v1/claims?order=created_at.desc&limit=100",{auth:1})]);
+  }catch(e){return e.message==="auth"?location.replace("/"):void(root.textContent=e.message)}
+  if(!pr)return onboard();
+  const exp=sub?new Date(sub.expires_at):null,active=exp&&exp>Date.now();
+  const day=864e5,n7=clicks.filter(c=>Date.now()-new Date(c.created_at)<7*day).length;
+  const per=links.map(l=>({l,n:clicks.filter(c=>c.link_id==l.id).length})),mx=Math.max(1,...per.map(x=>x.n));
+  const url=`${location.origin}/${pr.username}`;
+  const mine=claims.filter(c=>c.user_id===S.uid).slice(0,5);
+  const pend=adm?claims.filter(c=>c.status==="pending"):[];
+  const adminHtml=adm?`<h2>Admin: payments</h2><div class="c"><b>Waiting for approval (${pend.length})</b>
+  ${pend.map(c=>`<div class="r" style="margin:6px 0"><span style="flex:1"><b>${esc(c.code)}</b> · ${esc(c.phone||"")}<br><span class="m">${new Date(c.created_at).toLocaleString()}</span></span><button class="p" data-ap="${c.id}">Approve</button><button data-rj="${c.id}">Reject</button></div>`).join("")||'<div class="m">Nothing waiting</div>'}
+  <div class="m" style="margin-top:10px">Got a payment? Paste the code from your M-Pesa SMS so the customer is activated automatically:</div>
+  <div class="r"><input id="rc" placeholder="Code e.g. QGH7X2K9LM"><input id="ra" type="number" value="${cfg.price}" style="width:90px"><button class="p" id="rb">Add</button></div><div class="m" id="rst"></div></div>`:"";
+  root.innerHTML=`<div class="a"><div class="r"><h2 style="flex:1;margin:0">Ownly</h2><button id="out">Log out</button></div>
+  <div class="c" style="margin-top:12px"><div>Your page: <a href="/${esc(pr.username)}" target="_blank">${esc(url)}</a></div>
+  <div class="${active?"ok":"no"}" style="margin:6px 0"><b>${active?"Active until "+exp.toLocaleDateString():"Inactive: your page is hidden from visitors"}</b></div>
+  <div class="m"><b>${active?"Renew":"Subscribe"}:</b> 1) Pay <b>KES ${cfg.price}</b> to M-Pesa Till <b>${esc(cfg.till)}</b>${cfg.till_name?" ("+esc(cfg.till_name)+")":""} for ${cfg.period_days} days. 2) Enter the confirmation code from the M-Pesa SMS.</div>
+  <input id="cd" placeholder="M-Pesa code e.g. QGH7X2K9LM" autocapitalize="characters" maxlength="12"><div class="r"><input id="ph" type="tel" placeholder="Phone you paid from"><button class="p" id="pay" style="white-space:nowrap">Submit code</button></div><div class="m" id="pst"></div>
+  ${mine.map(c=>`<div class="m">${esc(c.code)}: <b class="${c.status==="approved"?"ok":c.status==="rejected"?"no":""}">${c.status}</b></div>`).join("")}</div>${adminHtml}
+  <h2>Clicks</h2><div class="c"><div class="r"><div style="flex:1"><div class="m">Total</div><b style="font-size:26px">${clicks.length}</b></div><div style="flex:1"><div class="m">Last 7 days</div><b style="font-size:26px">${n7}</b></div></div>
+  ${per.map(x=>`<div class="r"><span style="flex:1">${esc(x.l.title)}</span><b>${x.n}</b></div><div class="bar" style="width:${x.n/mx*100}%"></div>`).join("")}</div>
+  <h2>Profile</h2><div class="c"><input id="pn" value="${esc(pr.name)}" placeholder="Display name"><textarea id="pb" rows="2" placeholder="Bio">${esc(pr.bio)}</textarea><input id="pa" value="${esc(pr.avatar)}" placeholder="Avatar image URL">
+  <div class="r"><input id="pc" type="color" value="${esc(pr.color)}" style="width:60px"><input id="pg" type="color" value="${esc(pr.bg)}" style="width:60px"><select id="ps">${["fill","outline","pill"].map(s=>`<option ${pr.style==s?"selected":""}>${s}</option>`).join("")}</select><button class="p" id="sp">Save</button></div></div>
+  <h2>Links</h2>${links.map((l,i)=>`<div class="c" data-id="${l.id}" data-i="${i}"><div class="r"><input style="width:56px" data-f="emoji" value="${esc(l.emoji)}"><input data-f="title" value="${esc(l.title)}"></div><input data-f="url" value="${esc(l.url)}">
+  <div class="r"><button data-a="up">↑</button><button data-a="dn">↓</button><span style="flex:1"></span><button data-a="del">Delete</button></div></div>`).join("")}<button class="p" id="add">+ Add link</button></div>`;
+  $("#out").onclick=()=>{setS(null);location.replace("/")};
+  $("#sp").onclick=async()=>{await api(`/rest/v1/profiles?user_id=eq.${S.uid}`,{method:"PATCH",auth:1,body:{name:$("#pn").value,bio:$("#pb").value,avatar:$("#pa").value,color:$("#pc").value,bg:$("#pg").value,style:$("#ps").value}});$("#sp").textContent="Saved ✓"};
+  $("#add").onclick=async()=>{await api("/rest/v1/links",{method:"POST",auth:1,body:{title:"New link",url:"https://",position:links.length}});app()};
+  root.querySelectorAll(".c[data-id]").forEach(c=>{const id=c.dataset.id,i=+c.dataset.i;
+    c.querySelectorAll("input").forEach(inp=>inp.onchange=()=>api("/rest/v1/links?id=eq."+id,{method:"PATCH",auth:1,body:{[inp.dataset.f]:inp.value}}));
+    c.querySelectorAll("[data-a]").forEach(b=>b.onclick=async()=>{const a=b.dataset.a;
+      if(a==="del"){if(confirm("Delete link and its click history?"))await api("/rest/v1/links?id=eq."+id,{method:"DELETE",auth:1})}
+      else{const j=a==="up"?i-1:i+1;if(j<0||j>=links.length)return;
+        await Promise.all([api("/rest/v1/links?id=eq."+id,{method:"PATCH",auth:1,body:{position:j}}),api("/rest/v1/links?id=eq."+links[j].id,{method:"PATCH",auth:1,body:{position:i}})])}
+      app()})});
+  const msg=e=>{try{return JSON.parse(e.message).message}catch(_){return e.message}};
+  $("#pay").onclick=async()=>{
+    const st=$("#pst");st.textContent="Checking…";
+    try{
+      const r=await api("/rest/v1/rpc/submit_claim",{method:"POST",auth:1,body:{p_code:$("#cd").value,p_phone:$("#ph").value}});
+      if(r==="approved")return app();
+      st.textContent="Code received. Your page will be activated as soon as the payment is confirmed.";
+      setTimeout(app,2500);
+    }catch(e){st.textContent=msg(e)}
+  };
+  if(adm){
+    root.querySelectorAll("[data-ap]").forEach(b=>b.onclick=async()=>{await api("/rest/v1/rpc/approve_claim",{method:"POST",auth:1,body:{p_id:+b.dataset.ap}});app()});
+    root.querySelectorAll("[data-rj]").forEach(b=>b.onclick=async()=>{await api("/rest/v1/rpc/reject_claim",{method:"POST",auth:1,body:{p_id:+b.dataset.rj}});app()});
+    $("#rb").onclick=async()=>{try{const r=await api("/rest/v1/rpc/add_received",{method:"POST",auth:1,body:{p_code:$("#rc").value,p_amount:+$("#ra").value}});$("#rst").textContent="Saved: "+r;if(/activated/.test(r))setTimeout(app,1500)}catch(e){$("#rst").textContent=msg(e)}};
+  }
+}
+
+const path=location.pathname.replace(/\/+$/,"")||"/";
+if(path==="/")home();
+else if(path==="/app")app();
+else pub(path.slice(1).toLowerCase()).catch(e=>root.innerHTML=`<div class="w">Something went wrong.<br><span class="m">${esc(e.message)}</span></div>`);
+</script></body></html>
